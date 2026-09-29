@@ -11,6 +11,7 @@
 #include "ajabase/system/process.h"	//	for GetPID
 #include "ajabase/common/common.h"	//	for strip
 #include <signal.h>
+#include <stdio.h>
 
 using namespace std;
 
@@ -34,10 +35,13 @@ int main (int argc, const char ** argv)
 	char *	pFramesSpec		(AJA_NULL);		//	AutoCirculate frames spec
 	char *	pAncFilePath	(AJA_NULL);		//	Anc data filepath to record
 	char *	pInputSrcSpec	(AJA_NULL);		//	SDI source spec
+	char *	pSnapshotPath	(AJA_NULL);		//	One-shot BGRA snapshot path
 	int		channelNumber	(1);			//	Channel/FrameStore to use
 	int		doMultiFormat	(0);			//	MultiFormat mode?
 	int		noAudio			(0);			//	Disable audio capture?
 	int		captureAnc		(0);			//	Capture anc?
+	int		streamRawBGRA	(0);			//	Stream BGRA to stdout?
+	int		snapshotTimeoutMs (1200);		//	Snapshot timeout
 	AJADebug::Open();
 
 	//	Command line option descriptions:
@@ -50,6 +54,9 @@ int main (int argc, const char ** argv)
 		{"pixelFormat",	'p',	POPT_ARG_STRING,	&pPixelFormat,	0,	"pixel format to use",		"'?' or 'list' to list"		},
 		{"frames",		  0,	POPT_ARG_STRING,	&pFramesSpec,	0,	"frames to AutoCirculate",	"num[@min] or min-max"		},
 		{"input",		'i',	POPT_ARG_STRING,	&pInputSrcSpec,	0,	"which SDI input",			"1-8, ?=list"				},
+		{"snapshot",	  0,	POPT_ARG_STRING,	&pSnapshotPath,	0,	"write first frame as raw BGRA and exit", "path/to/frame.bgra"	},
+		{"stream-raw-bgra", 0, POPT_ARG_NONE,	&streamRawBGRA,	0,	"stream BGRA frames to stdout",	AJA_NULL					},
+		{"snapshot-timeout-ms", 0, POPT_ARG_INT,	&snapshotTimeoutMs, 0, "snapshot timeout in milliseconds", "100-10000"},
 		{"anc",			  0,	POPT_ARG_STRING,	&pAncFilePath,	0,	"record anc to file",		"path/to/binary/data/file"	},
 		{AJA_NULL,		'a',	POPT_ARG_NONE,		&captureAnc,	0,	"capture anc?",				AJA_NULL					},
 		{"noaudio",		  0,	POPT_ARG_NONE,		&noAudio,		0,	"disable audio capture",	AJA_NULL					},
@@ -74,13 +81,13 @@ int main (int argc, const char ** argv)
 	config.fInputChannel = NTV2Channel(channelNumber - 1);
 
 	//	Input source
-	const string legalSources (CNTV2DemoCommon::GetInputSourceStrings(NTV2_IOKINDS_SDI, deviceSpec));
+	const string legalSources (CNTV2DemoCommon::GetInputSourceStrings(NTV2_IOKINDS_ALL, deviceSpec));
 	const string inputSourceStr	(pInputSrcSpec ? CNTV2DemoCommon::ToLower(string(pInputSrcSpec)) : "");
 	if (inputSourceStr == "?" || inputSourceStr == "list")
 		{cout << legalSources << endl;  return 0;}
 	if (!inputSourceStr.empty())
 	{
-		config.fInputSource = CNTV2DemoCommon::GetInputSourceFromString(inputSourceStr);
+		config.fInputSource = CNTV2DemoCommon::GetInputSourceFromString(inputSourceStr, NTV2_IOKINDS_ALL, deviceSpec);
 		if (!NTV2_IS_VALID_INPUT_SOURCE(config.fInputSource))
 			{cerr << "## ERROR:  Input source '" << inputSourceStr << "' not one of:" << endl << legalSources << endl;	return 1;}
 	}	//	if input source specified
@@ -126,10 +133,33 @@ int main (int argc, const char ** argv)
 	config.fWithAnc				= captureAnc ? true : false;			//	Capture anc?
 	config.fDoMultiFormat		= doMultiFormat ? true : false;			//	Multiformat mode?
 
+	const string snapshotPath (pSnapshotPath ? pSnapshotPath : "");
+	const bool doSnapshot (!snapshotPath.empty());
+	const bool doRawStream (streamRawBGRA != 0);
+	if (doSnapshot && doRawStream)
+	{
+		cerr << "## ERROR: --snapshot and --stream-raw-bgra cannot be used together" << endl;
+		return 2;
+	}
+	if (doSnapshot || doRawStream)
+	{
+		config.fPixelFormat = NTV2_FBF_ARGB;
+		config.fWithAudio = false;
+		config.fWithAnc = false;
+		config.fAncDataFilePath.clear();
+	}
+
 	int result (0);
 	do
 	{	//	Instantiate and initialize the NTV2Capture object...
 		NTV2Capture capturer(config);
+		if (doSnapshot)
+			capturer.EnableSnapshot(snapshotPath);
+		if (doRawStream)
+		{
+			capturer.EnableRawStream();
+			::setvbuf(stdout, AJA_NULL, _IONBF, 0);
+		}
 		if (AJA_FAILURE(capturer.Init()))
 			{result = 1;  break;}
 
@@ -141,6 +171,30 @@ int main (int argc, const char ** argv)
 
 		//	Run it...
 		capturer.Run();
+		if (doSnapshot)
+		{
+			if (snapshotTimeoutMs < 100)
+				snapshotTimeoutMs = 100;
+			if (snapshotTimeoutMs > 10000)
+				snapshotTimeoutMs = 10000;
+			const uint64_t deadline (AJATime::GetSystemMilliseconds() + uint64_t(snapshotTimeoutMs));
+			while (!gGlobalQuit && !capturer.SnapshotCaptured() && AJATime::GetSystemMilliseconds() < deadline)
+				AJATime::Sleep(10);
+			capturer.Quit();
+			if (!capturer.SnapshotCaptured())
+			{
+				cerr << "## ERROR: Snapshot timed out after " << snapshotTimeoutMs << " ms" << endl;
+				result = 3;
+			}
+			break;
+		}
+		if (doRawStream)
+		{
+			while (!gGlobalQuit)
+				AJATime::Sleep(25);
+			capturer.Quit();
+			break;
+		}
 
 		cout	<< "   Frames   Frames   Buffer" << endl
 				<< " Captured  Dropped    Level" << endl;

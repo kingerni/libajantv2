@@ -11,6 +11,8 @@
 
 #include "ntv2democommon.h"
 #include "ajabase/system/thread.h"
+#include <string>
+#include <vector>
 
 
 /**
@@ -43,7 +45,24 @@ class NTV2Capture
 		/**
 			@brief	Gracefully stops me from running.
 		**/
-		virtual void				Quit (void);
+			virtual void				Quit (void);
+
+			/**
+				@brief	Enables one-shot frame snapshot mode.
+				@param[in]	inFilePath	Absolute or relative path to raw BGRA output file.
+			**/
+			virtual void				EnableSnapshot (const std::string & inFilePath);
+			virtual void				EnableRawStream (void);
+			virtual void				EnableFrameMap (const std::string & inFilePath, const ULWord inMaxBytes = 0);
+			virtual void				SetRawStreamFrameDecimation (const ULWord inEveryN);
+			virtual void				SetRawStreamDownsample (const ULWord inFactor);
+
+			/**
+				@brief	Returns true after a snapshot frame has been written.
+			**/
+			virtual bool				SnapshotCaptured (void) const;
+			virtual bool				RawStreamEnabled (void) const;
+			virtual bool				FrameMapEnabled (void) const;
 
 		/**
 			@brief	Provides status information about my input (capture) process.
@@ -94,7 +113,14 @@ class NTV2Capture
 		/**
 			@brief	Repeatedly consumes frames from the circular buffer (until global quit flag set).
 		**/
-		virtual void			ConsumeFrames (void);
+			virtual void			ConsumeFrames (void);
+			virtual bool			WriteSnapshotFrame (NTV2FrameData & inFrameData);
+			virtual bool			WriteStreamFrame (NTV2FrameData & inFrameData);
+			virtual void			EmitTimecodeTelemetry (NTV2FrameData & inFrameData);
+			virtual void			EmitAudioTelemetry (NTV2FrameData & inFrameData);
+			virtual void			EmitCameraMetadataTelemetry (NTV2FrameData & inFrameData);
+			virtual bool			SetupFrameMap (void);
+			virtual void			TeardownFrameMap (void);
 
 
 	//	Protected Class Methods
@@ -129,9 +155,32 @@ class NTV2Capture
 		NTV2TaskMode		mSavedTaskMode;		///< @brief	Used to restore prior every-frame task mode
 		NTV2AudioSystem		mAudioSystem;		///< @brief	The audio system I'm using (if any)
 		NTV2FrameDataArray	mHostBuffers;		///< @brief	My host buffers
-		FrameDataRingBuffer	mAVCircularBuffer;	///< @brief	My ring buffer object
-		bool				mGlobalQuit;		///< @brief	Set "true" to gracefully stop
+			FrameDataRingBuffer	mAVCircularBuffer;	///< @brief	My ring buffer object
+			bool				mGlobalQuit;		///< @brief	Set "true" to gracefully stop
+			bool				mUseLevelBTSIRouting;	///< @brief	True when Level-B SDI should route DS1/DS2 via TSI mux
+			bool				mSnapshotCaptured;	///< @brief	Set true after writing snapshot
+			std::string			mSnapshotPath;		///< @brief	Output path for one-shot snapshot
+			bool				mRawStreamEnabled;	///< @brief	Set true to stream BGRA frames to stdout
+			uint64_t			mRawStreamFrameCount;///< @brief	Incremented for each streamed frame
+			ULWord				mRawStreamEveryN;	///< @brief	Only every Nth frame is streamed (1=no decimation)
+			uint64_t			mRawStreamSeenCount;///< @brief	Incremented for each candidate stream frame
+			ULWord				mRawStreamDownsample;///< @brief	2=half width/height, 1=no scaling
+			std::vector<uint8_t> mRawScratch;	///< @brief	Reusable scratch buffer for scaled/deinterlaced output
+			bool				mFrameMapEnabled;	///< @brief	Set true to stream latest frame into mmap file
+			std::string			mFrameMapPath;		///< @brief	Memory-mapped frame file path
+			ULWord				mFrameMapMaxBytes;	///< @brief	Optional max bytes requested by caller
+			int					mFrameMapFD;		///< @brief	File descriptor for mapped frame file
+			uint8_t *			mFrameMapPtr;		///< @brief	Mapped file base pointer
+				size_t				mFrameMapSize;		///< @brief	Size of mapped frame file
+				uint64_t			mFrameMapSeq;		///< @brief	Committed frame sequence number (even values)
+				uint32_t			mFrameMapBank;		///< @brief	Current committed payload bank (0/1 for double-buffer maps)
+				uint64_t			mLastTimecodeLogMs;	///< @brief	Last emitted RP188 telemetry timestamp
+				std::string			mLastTimecodeTelemetry;	///< @brief	Last emitted RP188 telemetry payload
+				uint64_t			mLastAudioLogMs;	///< @brief	Last emitted audio telemetry timestamp
+				std::string			mLastAudioTelemetry;	///< @brief	Last emitted audio telemetry payload
+				uint64_t			mLastCameraMetadataLogMs;	///< @brief	Last emitted camera metadata telemetry timestamp
+				std::string			mLastCameraMetadataTelemetry;	///< @brief	Last emitted camera metadata telemetry payload
 
-};	//	NTV2Capture
+			};	//	NTV2Capture
 
 #endif	//	_NTV2CAPTURE_H
