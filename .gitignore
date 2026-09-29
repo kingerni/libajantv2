@@ -1,4 +1,6 @@
 /build/
+/build-arm64-demos-tools/
+/build-arm64-ninja/
 /install/
 /ajantv2/includes/ntv2version.h
 /docs/ntv2.doxy
